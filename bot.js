@@ -5,11 +5,11 @@ const axios = require('axios');
 const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-console.log('🚀 Bot started successfully!');
+console.log(' Bot started successfully!');
 
 // أمر البداية
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, '🤖 أهلاً بك في بوت التداول المصري!\n\nالأوامر المتاحة:\n/price SYMBOL - لمعرفة سعر السهم\n/list - لأسهم المتاحة\n/support SYMBOL PRICE - لتحديد نقطة دعم\n/resistance SYMBOL PRICE - لتحديد نقطة مقاومة');
+  bot.sendMessage(msg.chat.id, ' أهلاً بك في بوت التداول المصري!\n\nالأوامر المتاحة:\n/price SYMBOL - لمعرفة سعر السهم\n/list - لأسهم المتاحة\n/support SYMBOL PRICE - لتحديد نقطة دعم\n/resistance SYMBOL PRICE - لتحديد نقطة مقاومة');
 });
 
 // قائمة الأسهم المتاحة
@@ -17,66 +17,85 @@ bot.onText(/\/list/, (msg) => {
   bot.sendMessage(msg.chat.id, '✅ الأسهم المتاحة حالياً:\nCOMI - EFID - ETEL - HRHO - ESRS - SWDY - PHDC - TMGH - SODIC - MNHD', { parse_mode: 'Markdown' });
 });
 
-// أمر /price - سحب البيانات من مباشر (Mubasher)
+// أمر /price - سحب البيانات من مباشر (Mubasher) بطريقة "الحفر العميق"
 bot.onText(/\/price (.+)/, async (msg, match) => {
   const symbol = match[1].toUpperCase();
   const chatId = msg.chat.id;
 
   // رسالة تحميل
-  await bot.sendMessage(chatId, `⏳ جاري جلب بيانات ${symbol} من السوق...`);
+  const loadingMsg = await bot.sendMessage(chatId, `⏳ جاري جلب بيانات ${symbol} من السوق...`);
 
   try {
-    // 1. محاولة جلب السعر من مباشر (Mubasher)
+    // 1. طلب الصفحة
     const mubasherUrl = `https://www.mubasher.info/markets/EGX/stocks/${symbol}`;
     const res = await axios.get(mubasherUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+      },
       timeout: 8000
     });
 
     const html = res.data;
     
-    // استخراج السعر بواسطة Regex
-    let priceMatch = html.match(/class="stock-price__value[^"]*"[^>]*>([\d,\.]+)/);
-    let price = priceMatch ? parseFloat(priceMatch[1].replace(',', '')) : null;
+    // 2. استخراج السعر (الطريقة الذكية)
+    // نحاول نجيب السعر من بيانات Next.js المخفية (lastPrice)
+    let price = null;
+    let changeVal = 0;
+    let volume = 0;
 
+    // محاولة 1: البحث عن lastPrice في الـ JSON
+    const jsonMatch = html.match(/"lastPrice":\s*"?([\d,\.]+)"?/); 
+    if (jsonMatch) {
+        price = parseFloat(jsonMatch[1].replace(',', ''));
+    } 
+    
+    // محاولة 2: البحث عن priceChange
+    const changeMatch = html.match(/"priceChange":\s*"?(-?[\d,\.]+)"?/);
+    if (changeMatch) changeVal = parseFloat(changeMatch[1].replace(/[^\d.-]/g, ''));
+
+    // محاولة 3: البحث عن الحجم tradedVolume
+    const volMatch = html.match(/"tradedVolume":\s*"?([\d,\.]+)"?/);
+    if (volMatch) volume = parseInt(volMatch[1].replace(',', ''));
+
+    // لو لسه مفيش سعر، نجرب البحث عن أي رقم بجوار "ج.م"
+    if (!price) {
+        const genericPriceMatch = html.match(/([\d,]+\.?\d{2})\s*(ج\.م|جنيه)/);
+        if (genericPriceMatch) {
+             price = parseFloat(genericPriceMatch[1].replace(',', ''));
+        }
+    }
+
+    // 3. إرسال النتيجة
     if (price) {
-      // استخراج التغيير والنسبة إذا أمكن
-      let changeText = html.match(/class="stock-change__value[^"]*"[^>]*>([-+]?[\d,.]+)/);
-      let changeVal = changeText ? parseFloat(changeText[1].replace(/[^\d.-]/g, '')) : 0;
-      
-      // استخراج الحجم
-      let volText = html.match(/data-testid="volume"[^>]*>([\d,\.]+)/);
-      let volume = volText ? parseInt(volText[1].replace(',', '')) : 0;
-
-      const icon = changeVal >= 0 ? '📈' : '📉';
-      
-      // بناء الرسالة النهائية
+      const icon = changeVal >= 0 ? '' : '📉';
       const text = `📊 *${symbol}*\n💰 السعر: ${price.toFixed(2)} جنيه ${icon}\n📝 التغيير: ${changeVal.toFixed(2)}\n📦 الحجم: ${(volume/1000000).toFixed(1)} مليون`;
       
-      // تعديل رسالة التحميل لتكون هي النتيجة النهائية
-      // ملاحظة: سنقوم بإرسال رسالة جديدة هنا لتجنب مشاكل editMessageText في بعض الحالات
-      bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      // تعديل رسالة التحميل بالنتيجة
+      bot.editMessageText(text, { chat_id: chatId, message_id: loadingMsg.message_id, parse_mode: 'Markdown' });
     } else {
-      throw new Error('Price not found in Mubasher');
+      throw new Error('Price not found');
     }
 
   } catch (error) {
     console.error(`❌ Error fetching ${symbol}:`, error.message);
-    // Fallback: رابط TradingView المباشر إذا فشل المسح
-    bot.sendMessage(chatId, `⚠️ لم يتم العثور على سعر دقيق لـ ${symbol}.\n🔗 تابعه الآن على TradingView:\nhttps://www.tradingview.com/chart/?symbol=EGX:${symbol}`, { parse_mode: 'Markdown' });
+    // لو فشل كل شيء، نبعت رابط الشارت
+    bot.editMessageText(`⚠️ لم يتم العثور على سعر دقيق لـ ${symbol}.\n🔗 تابعه الآن على TradingView:\nhttps://www.tradingview.com/chart/?symbol=EGX:${symbol}`, { 
+      chat_id: chatId, 
+      message_id: loadingMsg.message_id, 
+      parse_mode: 'Markdown' 
+    });
   }
 });
 
-// أوامر الدعم والمقاومة (بسيطة للمتابعة)
+// أوامر الدعم والمقاومة
 bot.onText(/\/support\s+(\w+)\s+([\d.]+)/, (msg, match) => {
-  // يمكن تطويرها لاحقاً لحفظ النقاط في قاعدة بيانات
   const sym = match[1].toUpperCase();
   const price = match[2];
-  bot.sendMessage(msg.chat.id, `✅ تم تثبيت نقطة الدعم لـ ${sym} عند السعر ${price}. سيتم التنبيه عند الوصول.`);
+  bot.sendMessage(msg.chat.id, `✅ تم تثبيت نقطة الدعم لـ ${sym} عند السعر ${price}.`);
 });
 
 bot.onText(/\/resistance\s+(\w+)\s+([\d.]+)/, (msg, match) => {
   const sym = match[1].toUpperCase();
   const price = match[2];
-  bot.sendMessage(msg.chat.id, `✅ تم تثبيت نقطة المقاومة لـ ${sym} عند السعر ${price}. سيتم التنبيه عند الوصول.`);
+  bot.sendMessage(msg.chat.id, `✅ تم تثبيت نقطة المقاومة لـ ${sym} عند السعر ${price}.`);
 });
