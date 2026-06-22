@@ -4,11 +4,39 @@ const axios = require('axios');
 const TOKEN = process.env.TOKEN;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// قائمة أصغر عشان السرعة
-const STOCKS = ['COMI', 'EFID', 'ETEL', 'HRHO', 'ESRS', 'SWDY', 'PHDC', 'TMGH'];
+// ====== القائمة الشاملة لأسهم البورصة المصرية ======
+const ALL_EGX_STOCKS = [
+  // البنوك والخدمات المالية
+  'COMI', 'CIB', 'EGBN', 'ABUK', 'ALEX', 'BKNS', 'CAIB', 'CIHB',
+  'EBEK', 'EKBN', 'ESBE', 'NSGB', 'SAIB', 'THBK',
+  
+  // العقارات
+  'TMGH', 'MNHD', 'SODIC', 'PHDC', 'OCDI', 'FWRY', 'HELI', 'LXIN',
+  'MOPH', 'NILE', 'QALY', 'PALM', 'EKHO', 'EKZN', 'HOD', 'DOMT',
+  
+  // الاتصالات والتكنولوجيا
+  'ETEL', 'SWDY', 'HRHO', 'ESRS', 'TELS', 'ITPAC',
+  
+  // الصناعة
+  'EFID', 'EAST', 'ORWE', 'JUFO', 'ZMZA', 'KARO', 'ISPH', 'UNIP',
+  'MKPH', 'EIPIC', 'RMDA', 'PHCI', 'APPC', 'SKPC', 'MCDR',
+  
+  // المواد الأساسية
+  'INEG', 'LUTS', 'AGRI', 'CEMI', 'CHEM', 'CLHO', 'EGAS', 'ETRA',
+  'FERT', 'GAS', 'GLBC', 'IRON', 'MINA', 'MNQC', 'PACK', 'PAPR',
+  'PLAS', 'POLY', 'RUBR', 'SAND', 'SHMD', 'STLT', 'TEXT', 'TILE',
+  'TIMB', 'AUTO', 'SPIN', 'EGTS', 'THMD', 'ALHE', 'HOTL', 'TOUR',
+  
+  // الطاقة والمرافق
+  'ELEC', 'ENER', 'FINS', 'HOLD', 'INVS', 'LEAS', 'REIT', 'SUKN',
+  
+  // أسهم إضافية
+  'AMOC', 'BIOP', 'ASLN', 'DWEE', 'CWPC', 'DOCT', 'EWBY'
+];
 
-console.log('🚀 Fast Scanner Started!');
+console.log(`🚀 Full EGX Scanner Started! (${ALL_EGX_STOCKS.length} stocks)`);
 
+// ====== دوال الحساب ======
 function calcEMA(data, period) {
   if (data.length < period) return null;
   const k = 2 / (period + 1);
@@ -38,7 +66,7 @@ async function scanSymbol(symbol) {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=3mo&interval=1d`;
     const { data } = await axios.get(url, { 
       headers: { 'User-Agent': 'Mozilla/5.0' }, 
-      timeout: 8000  // مهم جداً
+      timeout: 6000
     });
     
     const quotes = data.chart?.result?.[0]?.indicators?.quote?.[0];
@@ -46,14 +74,13 @@ async function scanSymbol(symbol) {
     
     const closes = (quotes.close || []).filter(v => v != null);
     const highs = (quotes.high || []).filter(v => v != null);
-    const lows = (quotes.low || []).filter(v => v != null);
     const volumes = (quotes.volume || []).filter(v => v != null);
     
     if (closes.length < 50) return null;
     
     const close = closes[closes.length - 1];
     const vol = volumes[volumes.length - 1];
-    const volAvg = volumes.slice(-20).reduce((a,b) => a+b, 0) / 20; // ✅ تصحيح الخطأ
+    const volAvg = volumes.slice(-20).reduce((a,b) => a+b, 0) / 20;
     
     const ema20 = calcEMA(closes, 20);
     const ema50 = calcEMA(closes, 50);
@@ -63,82 +90,143 @@ async function scanSymbol(symbol) {
     if (!ema20 || !ema50 || !ema200 || !rsi) return null;
     
     const resistance = Math.max(...highs.slice(-20));
-    const atr = 3; // تبسيط
+    const atr = Math.max(0.5, close * 0.03); // ATR تقريبي
     
-    // الفلاتر البسيطة
     const trendUp = close > ema50 && close > ema200;
     const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
     const rsiOK = rsi >= 40 && rsi <= 70;
     const volOK = vol > volAvg * 1.0;
     
+    // نظام الارتداد
     if (trendUp && nearSupport && rsiOK && volOK) {
       return {
         symbol,
         price: close.toFixed(2),
-        signal: `شراء عند الارتداد (RSI: ${rsi.toFixed(1)})`,
+        signal: '📈 ارتداد من دعم',
+        type: 'Pullback',
         entry: close.toFixed(2),
         sl: (close - atr * 1.5).toFixed(2),
-        tp1: (close + atr * 2.5).toFixed(2)
+        tp1: (close + atr * 2.5).toFixed(2),
+        rsi: rsi.toFixed(1)
       };
     }
     
+    // نظام الكسر
     if (close > resistance && rsi >= 45 && rsi <= 75 && volOK) {
       return {
         symbol,
         price: close.toFixed(2),
-        signal: `💥 كسر مقاومة`,
+        signal: '💥 كسر مقاومة',
+        type: 'Breakout',
         entry: close.toFixed(2),
         sl: (close - atr * 1.5).toFixed(2),
-        tp1: (close + atr * 2.5).toFixed(2)
+        tp1: (close + atr * 2.5).toFixed(2),
+        rsi: rsi.toFixed(1)
       };
     }
     
     return null;
     
   } catch (err) {
-    console.log(`❌ Error scanning ${symbol}: ${err.message}`);
     return null;
   }
 }
 
+// ====== أوامر البوت ======
+
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, '🤖 Hegazy Scanner\n\n/scan - فحص السوق\n/price SYMBOL - شارت السهم');
+  bot.sendMessage(msg.chat.id, 
+    `🤖 *Hegazy Full Market Scanner*\n\n` +
+    `📊 بفحص ${ALL_EGX_STOCKS.length} سهم من البورصة المصرية\n\n` +
+    `الأوامر:\n` +
+    `/scan - فحص السوق بالكامل\n` +
+    `/scanfast - فحص سريع (أهم الأسهم)\n` +
+    `/price SYMBOL - شارت السهم`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.onText(/\/scanfast/, async (msg) => {
+  const chatId = msg.chat.id;
+  const fastList = ['COMI', 'EFID', 'ETEL', 'HRHO', 'TMGH', 'MNHD', 'SODIC', 'PHDC', 'SWDY', 'EAST'];
+  
+  await bot.sendMessage(chatId, `⚡ فحص سريع لـ ${fastList.length} أسهم...`);
+  
+  const results = [];
+  for (const sym of fastList) {
+    const result = await scanSymbol(sym);
+    if (result) results.push(result);
+  }
+  
+  sendResults(results, chatId);
 });
 
 bot.onText(/\/scan/, async (msg) => {
   const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, '⏳ جاري الفحص... (دقيقة واحدة)');
+  await bot.sendMessage(chatId, `🔍 جاري فحص ${ALL_EGX_STOCKS.length} سهم...\n⏱️ قد يستغرق 5-10 دقائق`);
   
   const results = [];
+  let scanned = 0;
   
-  for (let i = 0; i < STOCKS.length; i++) {
-    const sym = STOCKS[i];
-    await bot.sendMessage(chatId, `🔍 أفحص ${sym}... (${i+1}/${STOCKS.length})`);
+  // فحص الأسهم في مجموعات
+  for (let i = 0; i < ALL_EGX_STOCKS.length; i += 5) {
+    const batch = ALL_EGX_STOCKS.slice(i, i + 5);
+    const promises = batch.map(sym => scanSymbol(sym));
+    const batchResults = await Promise.all(promises);
     
-    const result = await scanSymbol(sym);
-    if (result) results.push(result);
+    batchResults.forEach(r => { if (r) results.push(r); });
+    scanned += batch.length;
     
-    // تأخير بسيط
-    await new Promise(r => setTimeout(r, 1000));
+    // تحديث كل 20 سهم
+    if (scanned % 20 === 0) {
+      await bot.sendMessage(chatId, `📊 تم فحص ${scanned}/${ALL_EGX_STOCKS.length}...`);
+    }
+    
+    // تأخير عشان متبلوكش
+    await new Promise(r => setTimeout(r, 2000));
   }
   
-  if (results.length > 0) {
-    let text = `🎯 *وجدت ${results.length} إشارة:*\n\n`;
-    results.forEach(r => {
-      text += `💎 *${r.symbol}*: ${r.signal}\n`;
-      text += `💰 السعر: ${r.price}\n`;
-      text += `📍 الدخول: ${r.entry} | وقف: ${r.sl}\n`;
-      text += `🎯 الهدف: ${r.tp1}\n\n`;
-    });
-    bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
-  } else {
-    bot.sendMessage(chatId, '⚪ مفيش إشارات شراء حالياً حسب الفلتر.');
-  }
+  sendResults(results, chatId);
 });
+
+function sendResults(results, chatId) {
+  if (results.length > 0) {
+    // تجميع النتائج في رسائل
+    const pullbacks = results.filter(r => r.type === 'Pullback');
+    const breakouts = results.filter(r => r.type === 'Breakout');
+    
+    let message = `🎯 *نتائج الفحص - ${results.length} إشارة*\n\n`;
+    
+    if (breakouts.length > 0) {
+      message += `💥 *كسر مقاومة (${breakouts.length}):*\n`;
+      breakouts.forEach(r => {
+        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
+        message += `  دخول: ${r.entry} | وقف: ${r.sl}\n`;
+        message += `  هدف: ${r.tp1}\n\n`;
+      });
+    }
+    
+    if (pullbacks.length > 0) {
+      message += `\n📈 *ارتداد من دعم (${pullbacks.length}):*\n`;
+      pullbacks.forEach(r => {
+        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
+        message += `  دخول: ${r.entry} | وقف: ${r.sl}\n`;
+        message += `  هدف: ${r.tp1}\n\n`;
+      });
+    }
+    
+    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+  } else {
+    bot.sendMessage(chatId, '⚪ مفيش إشارات شراء حالياً حسب الفلتر.\n\n*السوق في حالة انتظار.*', { parse_mode: 'Markdown' });
+  }
+}
 
 bot.onText(/\/price (.+)/, (msg, match) => {
   const sym = match[1].toUpperCase();
-  bot.sendMessage(msg.chat.id, `📊 ${sym}:\nhttps://www.tradingview.com/chart/?symbol=EGX:${sym}`);
+  bot.sendMessage(msg.chat.id, 
+    `📊 *${sym}*\n🔗 الشارت:\nhttps://www.tradingview.com/chart/?symbol=EGX:${sym}`,
+    { parse_mode: 'Markdown' }
+  );
 });
 
-console.log('✅ Bot ready!');
+console.log('✅ Full Market Scanner Ready!');
