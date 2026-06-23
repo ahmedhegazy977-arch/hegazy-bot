@@ -2,231 +2,500 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
 const TOKEN = process.env.TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ====== القائمة الشاملة لأسهم البورصة المصرية ======
-const ALL_EGX_STOCKS = [
-  // البنوك والخدمات المالية
-  'COMI', 'CIB', 'EGBN', 'ABUK', 'ALEX', 'BKNS', 'CAIB', 'CIHB',
-  'EBEK', 'EKBN', 'ESBE', 'NSGB', 'SAIB', 'THBK',
-  
-  // العقارات
-  'TMGH', 'MNHD', 'SODIC', 'PHDC', 'OCDI', 'FWRY', 'HELI', 'LXIN',
-  'MOPH', 'NILE', 'QALY', 'PALM', 'EKHO', 'EKZN', 'HOD', 'DOMT',
-  
-  // الاتصالات والتكنولوجيا
-  'ETEL', 'SWDY', 'HRHO', 'ESRS', 'TELS', 'ITPAC',
-  
-  // الصناعة
-  'EFID', 'EAST', 'ORWE', 'JUFO', 'ZMZA', 'KARO', 'ISPH', 'UNIP',
-  'MKPH', 'EIPIC', 'RMDA', 'PHCI', 'APPC', 'SKPC', 'MCDR',
-  
-  // المواد الأساسية
-  'INEG', 'LUTS', 'AGRI', 'CEMI', 'CHEM', 'CLHO', 'EGAS', 'ETRA',
-  'FERT', 'GAS', 'GLBC', 'IRON', 'MINA', 'MNQC', 'PACK', 'PAPR',
-  'PLAS', 'POLY', 'RUBR', 'SAND', 'SHMD', 'STLT', 'TEXT', 'TILE',
-  'TIMB', 'AUTO', 'SPIN', 'EGTS', 'THMD', 'ALHE', 'HOTL', 'TOUR',
-  
-  // الطاقة والمرافق
-  'ELEC', 'ENER', 'FINS', 'HOLD', 'INVS', 'LEAS', 'REIT', 'SUKN',
-  
-  // أسهم إضافية
-  'AMOC', 'BIOP', 'ASLN', 'DWEE', 'CWPC', 'DOCT', 'EWBY'
+// ====== أسهم البورصة المصرية (الأكثر نشاطاً) ======
+const EGX_STOCKS = [
+  'COMI', 'EFID', 'ETEL', 'HRHO', 'TMGH', 'MNHD', 'SODIC', 'PHDC',
+  'SWDY', 'EAST', 'ORWE', 'JUFO', 'KARO', 'ISPH', 'UNIP', 'MKPH',
+  'EIPIC', 'RMDA', 'PHCI', 'APPC', 'SKPC', 'MCDR', 'INEG', 'LUTS',
+  'AGRI', 'CEMI', 'CHEM', 'CLHO', 'EGAS', 'ETRA', 'FERT', 'GAS',
+  'GLBC', 'IRON', 'MINA', 'MNQC', 'PACK', 'PAPR', 'PLAS', 'POLY',
+  'RUBR', 'SAND', 'SHMD', 'STLT', 'TEXT', 'TILE', 'TIMB', 'AUTO',
+  'SPIN', 'EGTS', 'THMD', 'ALHE', 'HOTL', 'TOUR', 'ELEC', 'ENER',
+  'FINS', 'HOLD', 'INVS', 'LEAS', 'REIT', 'SUKN', 'AMOC', 'BIOP',
+  'ASLN', 'DWEE', 'CWPC', 'DOCT', 'EWBY', 'ABUK', 'ALEX', 'BKNS',
+  'CAIB', 'CIHB', 'EBEK', 'EKBN', 'ESBE', 'NSGB', 'SAIB', 'THBK',
+  'EGBN', 'HELI', 'LXIN', 'MOPH', 'NILE', 'QALY', 'PALM', 'EKHO',
+  'EKZN', 'HOD', 'DOMT', 'FWRY', 'OCDI', 'TELS', 'ITPAC', 'ESRS',
+  'ZMZA', 'CIB', 'EGBN'
 ];
 
-console.log(`🚀 Full EGX Scanner Started! (${ALL_EGX_STOCKS.length} stocks)`);
+console.log(`🚀 Hegazy Scanner Started! (${EGX_STOCKS.length} stocks)`);
 
-// ====== دوال الحساب ======
+// ====== دوال الحسابات التقنية ======
+
 function calcEMA(data, period) {
   if (data.length < period) return null;
   const k = 2 / (period + 1);
   let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < data.length; i++) ema = (data[i] - ema) * k + ema;
+  for (let i = period; i < data.length; i++) {
+    ema = (data[i] - ema) * k + ema;
+  }
   return ema;
+}
+
+function calcEMASeries(data, period) {
+  if (data.length < period) return [];
+  const k = 2 / (period + 1);
+  let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const result = [ema];
+  for (let i = period; i < data.length; i++) {
+    ema = (data[i] - ema) * k + ema;
+    result.push(ema);
+  }
+  return result;
 }
 
 function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
   let gains = 0, losses = 0;
   for (let i = 1; i <= period; i++) {
-    const ch = closes[i] - closes[i-1];
+    const ch = closes[i] - closes[i - 1];
     ch > 0 ? gains += ch : losses -= ch;
   }
   let avgGain = gains / period, avgLoss = losses / period;
+  
   for (let i = period + 1; i < closes.length; i++) {
-    const ch = closes[i] - closes[i-1];
-    if (ch > 0) { avgGain = (avgGain * (period-1) + ch) / period; avgLoss = (avgLoss * (period-1)) / period; }
-    else { avgGain = (avgGain * (period-1)) / period; avgLoss = (avgLoss * (period-1) - ch) / period; }
+    const ch = closes[i] - closes[i - 1];
+    if (ch > 0) {
+      avgGain = (avgGain * (period - 1) + ch) / period;
+      avgLoss = (avgLoss * (period - 1)) / period;
+    } else {
+      avgGain = (avgGain * (period - 1)) / period;
+      avgLoss = (avgLoss * (period - 1) - ch) / period;
+    }
   }
   return avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
 }
 
-async function scanSymbol(symbol) {
+function calcATR(highs, lows, closes, period = 14) {
+  if (highs.length < period + 1) return null;
+  const trList = [];
+  for (let i = 1; i < highs.length; i++) {
+    const tr1 = highs[i] - lows[i];
+    const tr2 = Math.abs(highs[i] - closes[i - 1]);
+    const tr3 = Math.abs(lows[i] - closes[i - 1]);
+    trList.push(Math.max(tr1, tr2, tr3));
+  }
+  return trList.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+function calcSMA(data, period) {
+  if (data.length < period) return null;
+  return data.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
+  const emaFast = calcEMASeries(closes, fast);
+  const emaSlow = calcEMASeries(closes, slow);
+  if (emaFast.length < slow || emaSlow.length < slow) return [null, null, null];
+  
+  const macdLine = [];
+  for (let i = slow - 1; i < emaFast.length; i++) {
+    macdLine.push(emaFast[i] - emaSlow[i]);
+  }
+  
+  const signalLine = calcEMASeries(macdLine, signal);
+  const histogram = [];
+  for (let i = 0; i < signalLine.length; i++) {
+    histogram.push(macdLine[i + macdLine.length - signalLine.length] - signalLine[i]);
+  }
+  
+  return [
+    macdLine[macdLine.length - 1],
+    signalLine[signalLine.length - 1],
+    histogram[histogram.length - 1]
+  ];
+}
+
+function calcADX(highs, lows, closes, period = 14) {
+  if (highs.length < period * 2) return null;
+  
+  const plusDM = [], minusDM = [], trList = [];
+  for (let i = 1; i < highs.length; i++) {
+    plusDM.push(Math.max(0, highs[i] - highs[i - 1]));
+    minusDM.push(Math.max(0, lows[i - 1] - lows[i]));
+    const tr1 = highs[i] - lows[i];
+    const tr2 = Math.abs(highs[i] - closes[i - 1]);
+    const tr3 = Math.abs(lows[i] - closes[i - 1]);
+    trList.push(Math.max(tr1, tr2, tr3));
+  }
+  
+  const atr = trList.slice(-period).reduce((a, b) => a + b, 0) / period;
+  const plusDI = 100 * (plusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
+  const minusDI = 100 * (minusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
+  
+  return Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
+}
+
+// ====== جلب البيانات من Yahoo Finance ======
+
+async function getYahooData(symbol) {
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}.CA?range=3mo&interval=1d`;
-    const { data } = await axios.get(url, { 
-      headers: { 'User-Agent': 'Mozilla/5.0' }, 
-      timeout: 6000
-    });
+    // Try different suffixes for Egyptian stocks
+    const suffixes = ['.CA', '.EG', ''];
+    let data = null;
     
-    const quotes = data.chart?.result?.[0]?.indicators?.quote?.[0];
-    if (!quotes) return null;
-    
-    const closes = (quotes.close || []).filter(v => v != null);
-    const highs = (quotes.high || []).filter(v => v != null);
-    const volumes = (quotes.volume || []).filter(v => v != null);
-    
-    if (closes.length < 50) return null;
-    
-    const close = closes[closes.length - 1];
-    const vol = volumes[volumes.length - 1];
-    const volAvg = volumes.slice(-20).reduce((a,b) => a+b, 0) / 20;
-    
-    const ema20 = calcEMA(closes, 20);
-    const ema50 = calcEMA(closes, 50);
-    const ema200 = calcEMA(closes, 200);
-    const rsi = calcRSI(closes);
-    
-    if (!ema20 || !ema50 || !ema200 || !rsi) return null;
-    
-    const resistance = Math.max(...highs.slice(-20));
-    const atr = Math.max(0.5, close * 0.03); // ATR تقريبي
-    
-    const trendUp = close > ema50 && close > ema200;
-    const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
-    const rsiOK = rsi >= 40 && rsi <= 70;
-    const volOK = vol > volAvg * 1.0;
-    
-    // نظام الارتداد
-    if (trendUp && nearSupport && rsiOK && volOK) {
-      return {
-        symbol,
-        price: close.toFixed(2),
-        signal: '📈 ارتداد من دعم',
-        type: 'Pullback',
-        entry: close.toFixed(2),
-        sl: (close - atr * 1.5).toFixed(2),
-        tp1: (close + atr * 2.5).toFixed(2),
-        rsi: rsi.toFixed(1)
-      };
+    for (const suffix of suffixes) {
+      try {
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}${suffix}?range=6mo&interval=1d`;
+        const resp = await axios.get(url, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          timeout: 8000
+        });
+        
+        if (resp.status === 200 && resp.data.chart?.result?.[0]) {
+          const result = resp.data.chart.result[0];
+          const timestamps = result.timestamp || [];
+          const quotes = result.indicators?.quote?.[0] || {};
+          
+          const closes = (quotes.close || []).filter(v => v != null);
+          const highs = (quotes.high || []).filter(v => v != null);
+          const lows = (quotes.low || []).filter(v => v != null);
+          const volumes = (quotes.volume || []).filter(v => v != null);
+          const opens = (quotes.open || []).filter(v => v != null);
+          
+          if (closes.length >= 50) {
+            data = { closes, highs, lows, volumes, opens, timestamps };
+            break;
+          }
+        }
+      } catch (e) {
+        continue;
+      }
     }
     
-    // نظام الكسر
-    if (close > resistance && rsi >= 45 && rsi <= 75 && volOK) {
-      return {
-        symbol,
-        price: close.toFixed(2),
-        signal: '💥 كسر مقاومة',
-        type: 'Breakout',
-        entry: close.toFixed(2),
-        sl: (close - atr * 1.5).toFixed(2),
-        tp1: (close + atr * 2.5).toFixed(2),
-        rsi: rsi.toFixed(1)
-      };
-    }
-    
-    return null;
-    
-  } catch (err) {
+    return data;
+  } catch (e) {
     return null;
   }
+}
+
+// ====== تحليل السهم ======
+
+async function analyzeStock(symbol) {
+  const data = await getYahooData(symbol);
+  if (!data) return null;
+  
+  const { closes, highs, lows, volumes } = data;
+  
+  const close = closes[closes.length - 1];
+  const high = highs[highs.length - 1];
+  const low = lows[lows.length - 1];
+  const vol = volumes[volumes.length - 1];
+  
+  // Calculate indicators
+  const ema20 = calcEMA(closes, 20);
+  const ema50 = calcEMA(closes, 50);
+  const ema200 = calcEMA(closes, 200);
+  const rsi = calcRSI(closes, 14);
+  const atr = calcATR(highs, lows, closes, 14);
+  const volAvg = calcSMA(volumes, 20);
+  const adx = calcADX(highs, lows, closes, 14);
+  const [macdLine, macdSignal, macdHist] = calcMACD(closes, 12, 26, 9);
+  
+  if (!ema20 || !ema50 || !ema200 || !rsi || !atr || !volAvg) return null;
+  
+  // Levels
+  const resistance = Math.max(...highs.slice(-21, -1));
+  const breakoutLevel = resistance + (atr * 0.15);
+  
+  // Conditions
+  const trendUp = close > ema50 && close > ema200;
+  const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
+  const nearSupportV4 = Math.abs(close - ema20) / ema20 < 0.03;
+  const rsiOKPullback = rsi >= 40 && rsi <= 70;
+  const rsiOKBreakout = rsi >= 45 && rsi <= 75;
+  const rsiOKV4 = rsi >= 45 && rsi <= 65;
+  const rsiOKBrk = rsi >= 40 && rsi <= 70;
+  const volOK = vol > volAvg * 1.0;
+  const volOKBrk = vol > volAvg * 1.2;
+  const isRanging = adx !== null && adx < 15;
+  const notOverbought = rsi < 78;
+  const momentum = closes.length >= 2 ? (close - closes[closes.length - 2]) / closes[closes.length - 2] * 100 > 0.8 : false;
+  const strongClose = close >= high * 0.96;
+  const trendUpSMC = close > calcSMA(closes, 20);
+  const volConditionSMC = vol > calcSMA(volumes, 5);
+  
+  const signals = [];
+  
+  // نظام 1: الارتداد والكسر
+  if (trendUp && nearSupport && rsiOKPullback && volOK) {
+    const sl = close - (atr * 1.5);
+    const tp1 = close + (atr * 2.5);
+    const tp2 = close + (atr * 4.5);
+    const rr = (tp1 - close) / (close - sl);
+    signals.push({ system: 'نظام الارتداد والكسر', signal: 'شراء عند الارتداد', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
+  }
+  
+  if (close > breakoutLevel && rsiOKBreakout && volOK) {
+    const sl = close - (atr * 1.5);
+    const tp1 = close + (atr * 2.5);
+    const tp2 = close + (atr * 4.5);
+    const rr = (tp1 - close) / (close - sl);
+    signals.push({ system: 'نظام الارتداد والكسر', signal: 'شراء عند الكسر', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
+  }
+  
+  // نظام 2: العمل
+  if (trendUp && !isRanging && volOK && rsiOKV4 && nearSupportV4) {
+    const sl = close - (atr * 1.5);
+    const tp1 = close + (atr * 2.5);
+    const tp2 = close + (atr * 4.5);
+    const rr = (tp1 - close) / (close - sl);
+    signals.push({ system: 'نظام العمل', signal: 'إشارة شراء', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
+  }
+  
+  // نظام 3: كسر المقاومة المؤكد
+  const brokeRes = close > resistance;
+  if (brokeRes && volOKBrk && rsiOKBrk && trendUp) {
+    const entry = close;
+    const sl = entry - (atr * 1.5);
+    const tp1 = entry + (atr * 2.5);
+    const risk = entry - sl;
+    const rr = risk > 0 ? (tp1 - entry) / risk : 0;
+    if (rr >= 1.3) {
+      signals.push({ system: 'نظام كسر المقاومة', signal: 'كسر مقاومة مؤكد', entry, sl, tp1, tp2: entry + (atr * 3.75), rr, strength: 'strong' });
+    }
+  }
+  
+  // نظام 4: الثلاث مراحل
+  const stage1 = vol >= 1000000 && vol / volAvg >= 1.2;
+  const stage2 = stage1 && close > ema50 && close > ema200 && ema20 > ema50;
+  const stage3 = stage2 && rsi >= 55 && rsi <= 75 && macdHist && macdHist > 0 && vol >= volAvg * 1.5;
+  
+  // Market check (simplified - assume OK if we can't get EGX30)
+  const marketOK = true; // Simplified
+  
+  if (stage3 && marketOK) {
+    const sl = close - (atr * 1.5);
+    const tp1 = close + (atr * 2.5);
+    const tp2 = close + (atr * 3.75);
+    const rr = (tp1 - close) / (close - sl);
+    signals.push({ system: 'نظام الثلاث مراحل', signal: 'شراء ثلاثي', entry: close, sl, tp1, tp2, rr, strength: 'strong' });
+  }
+  
+  // نظام 5: الأموال الذكية
+  const lowestLow = lows.length >= 5 ? Math.min(...lows.slice(-5)) : low;
+  const stopLossSMC = lowestLow * 0.97;
+  const riskSMC = close - stopLossSMC;
+  const target1SMC = close + (riskSMC * 2);
+  
+  if (strongClose && volConditionSMC && trendUpSMC && momentum && notOverbought) {
+    const rr = (target1SMC - close) / (close - stopLossSMC);
+    signals.push({ system: 'نظام الأموال الذكية', signal: 'شراء أموال ذكية', entry: close, sl: stopLossSMC, tp1: target1SMC, tp2: close + (riskSMC * 3), rr, strength: 'strong' });
+  }
+  
+  if (signals.length === 0) return null;
+  
+  // Return best signal
+  const strongSignals = signals.filter(s => s.strength === 'strong');
+  const best = strongSignals.length > 0 ? strongSignals[0] : signals[0];
+  
+  return {
+    ...best,
+    symbol,
+    price: close,
+    rsi,
+    ema20,
+    ema50,
+    ema200,
+    volume: vol,
+    volAvg,
+    atr,
+    allSignals: signals
+  };
+}
+
+// ====== إرسال الإشعارات ======
+
+async function sendSignal(signal) {
+  if (!signal) return;
+  
+  const emojis = {
+    'كسر مقاومة مؤكد': '🚀',
+    'شراء عند الارتداد': '📈',
+    'شراء عند الكسر': '💥',
+    'إشارة شراء': '✅',
+    'شراء ثلاثي': '📊',
+    'شراء أموال ذكية': '💎'
+  };
+  
+  const em = emojis[signal.signal] || '🔔';
+  
+  let msg = `${em} *إشارة جديدة - ${signal.symbol}*\n\n`;
+  msg += `📊 *النظام:* ${signal.system}\n`;
+  msg += `🎯 *الإشارة:* ${signal.signal}\n\n`;
+  msg += `💰 *السعر الحالي:* ${signal.price.toFixed(2)} EGP\n`;
+  msg += `🚪 *سعر الدخول:* ${signal.entry.toFixed(2)}\n`;
+  msg += `🛑 *وقف الخسارة:* ${signal.sl.toFixed(2)}\n`;
+  msg += `🎯 *الهدف الأول:* ${signal.tp1.toFixed(2)}\n`;
+  msg += `🎯 *الهدف الثاني:* ${signal.tp2.toFixed(2)}\n`;
+  msg += `📈 *R/R:* ${signal.rr.toFixed(2)}\n\n`;
+  msg += `📉 *المؤشرات:*\n`;
+  msg += `• RSI: ${signal.rsi.toFixed(1)}\n`;
+  msg += `• EMA20: ${signal.ema20.toFixed(2)}\n`;
+  msg += `• EMA50: ${signal.ema50.toFixed(2)}\n`;
+  msg += `• EMA200: ${signal.ema200.toFixed(2)}\n`;
+  msg += `• ATR: ${signal.atr.toFixed(2)}\n`;
+  msg += `• الحجم: ${signal.volume.toLocaleString()} (متوسط: ${signal.volAvg.toLocaleString()})\n\n`;
+  msg += `⏰ ${new Date().toLocaleString('ar-EG')}`;
+  
+  if (signal.allSignals.length > 1) {
+    msg += `\n\n🔥 *أنظمة إضافية متحققة:*\n`;
+    signal.allSignals.slice(1).forEach(s => {
+      msg += `• ${s.system}: ${s.signal}\n`;
+    });
+  }
+  
+  try {
+    await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
+    console.log(`✅ Signal sent: ${signal.symbol}`);
+  } catch (e) {
+    console.error(`❌ Failed to send: ${e.message}`);
+  }
+}
+
+async function sendSummary(results, total) {
+  if (!results || results.length === 0) {
+    await bot.sendMessage(CHAT_ID, 
+      '⚪ *لا توجد إشارات شراء حالياً*\\n\\nالسوق في حالة انتظار.\\n⏰ ' + new Date().toLocaleString('ar-EG'),
+      { parse_mode: 'Markdown' }
+    );
+    return;
+  }
+  
+  const strong = results.filter(r => r.strength === 'strong');
+  const normal = results.filter(r => r.strength === 'normal');
+  
+  let msg = `🎯 *ملخص فحص السوق*\\n`;
+  msg += `📊 تم فحص ${total} سهم\\n`;
+  msg += `✅ ${results.length} إشارة نشطة\\n\\n`;
+  
+  if (strong.length > 0) {
+    msg += `💎 *إشارات قوية (${strong.length}):*\\n`;
+    strong.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\\n`);
+  }
+  
+  if (normal.length > 0) {
+    msg += `\\n📈 *إشارات عادية (${normal.length}):*\\n`;
+    normal.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\\n`);
+  }
+  
+  msg += `\\n⏰ ${new Date().toLocaleString('ar-EG')}`;
+  
+  try {
+    await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
+  } catch (e) {
+    console.error(`❌ Summary failed: ${e.message}`);
+  }
+}
+
+// ====== الفحص ======
+
+async function scanMarket() {
+  console.log('🔍 Starting market scan...');
+  const results = [];
+  let scanned = 0;
+  
+  for (const symbol of EGX_STOCKS) {
+    try {
+      const result = await analyzeStock(symbol);
+      scanned++;
+      
+      if (result) {
+        results.push(result);
+        if (result.strength === 'strong') {
+          await sendSignal(result);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+      
+      // Rate limit
+      await new Promise(r => setTimeout(r, 500));
+      
+      if (scanned % 20 === 0) {
+        console.log(`📊 Scanned ${scanned}/${EGX_STOCKS.length}...`);
+      }
+    } catch (e) {
+      console.error(`❌ Error ${symbol}: ${e.message}`);
+    }
+  }
+  
+  await sendSummary(results, scanned);
+  console.log(`✅ Scan complete. Found ${results.length} signals.`);
+  return results;
 }
 
 // ====== أوامر البوت ======
 
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id, 
-    `🤖 *Hegazy Full Market Scanner*\n\n` +
-    `📊 بفحص ${ALL_EGX_STOCKS.length} سهم من البورصة المصرية\n\n` +
-    `الأوامر:\n` +
-    `/scan - فحص السوق بالكامل\n` +
-    `/scanfast - فحص سريع (أهم الأسهم)\n` +
-    `/price SYMBOL - شارت السهم`,
+  bot.sendMessage(msg.chat.id,
+    `🤖 *Hegazy Market Scanner*\\n\\n` +
+    `أنا بوت متخصص في فحص البورصة المصرية بـ 5 أنظمة تحليل تقني.\\n\\n` +
+    `*الأوامر:*\\n` +
+    `/scan - فحص السوق بالكامل\\n` +
+    `/status - حالة البوت\\n` +
+    `/help - المساعدة\\n\\n` +
+    `⏰ الفحص التلقائي كل 5 دقائق خلال الجلسة`,
     { parse_mode: 'Markdown' }
   );
-});
-
-bot.onText(/\/scanfast/, async (msg) => {
-  const chatId = msg.chat.id;
-  const fastList = ['COMI', 'EFID', 'ETEL', 'HRHO', 'TMGH', 'MNHD', 'SODIC', 'PHDC', 'SWDY', 'EAST'];
-  
-  await bot.sendMessage(chatId, `⚡ فحص سريع لـ ${fastList.length} أسهم...`);
-  
-  const results = [];
-  for (const sym of fastList) {
-    const result = await scanSymbol(sym);
-    if (result) results.push(result);
-  }
-  
-  sendResults(results, chatId);
 });
 
 bot.onText(/\/scan/, async (msg) => {
-  const chatId = msg.chat.id;
-  await bot.sendMessage(chatId, `🔍 جاري فحص ${ALL_EGX_STOCKS.length} سهم...\n⏱️ قد يستغرق 5-10 دقائق`);
-  
-  const results = [];
-  let scanned = 0;
-  
-  // فحص الأسهم في مجموعات
-  for (let i = 0; i < ALL_EGX_STOCKS.length; i += 5) {
-    const batch = ALL_EGX_STOCKS.slice(i, i + 5);
-    const promises = batch.map(sym => scanSymbol(sym));
-    const batchResults = await Promise.all(promises);
-    
-    batchResults.forEach(r => { if (r) results.push(r); });
-    scanned += batch.length;
-    
-    // تحديث كل 20 سهم
-    if (scanned % 20 === 0) {
-      await bot.sendMessage(chatId, `📊 تم فحص ${scanned}/${ALL_EGX_STOCKS.length}...`);
-    }
-    
-    // تأخير عشان متبلوكش
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  
-  sendResults(results, chatId);
+  await bot.sendMessage(msg.chat.id, '🔍 جاري فحص السوق... قد يستغرق 5-10 دقائق');
+  await scanMarket();
 });
 
-function sendResults(results, chatId) {
-  if (results.length > 0) {
-    // تجميع النتائج في رسائل
-    const pullbacks = results.filter(r => r.type === 'Pullback');
-    const breakouts = results.filter(r => r.type === 'Breakout');
-    
-    let message = `🎯 *نتائج الفحص - ${results.length} إشارة*\n\n`;
-    
-    if (breakouts.length > 0) {
-      message += `💥 *كسر مقاومة (${breakouts.length}):*\n`;
-      breakouts.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  دخول: ${r.entry} | وقف: ${r.sl}\n`;
-        message += `  هدف: ${r.tp1}\n\n`;
-      });
-    }
-    
-    if (pullbacks.length > 0) {
-      message += `\n📈 *ارتداد من دعم (${pullbacks.length}):*\n`;
-      pullbacks.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  دخول: ${r.entry} | وقف: ${r.sl}\n`;
-        message += `  هدف: ${r.tp1}\n\n`;
-      });
-    }
-    
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-  } else {
-    bot.sendMessage(chatId, '⚪ مفيش إشارات شراء حالياً حسب الفلتر.\n\n*السوق في حالة انتظار.*', { parse_mode: 'Markdown' });
-  }
-}
-
-bot.onText(/\/price (.+)/, (msg, match) => {
-  const sym = match[1].toUpperCase();
-  bot.sendMessage(msg.chat.id, 
-    `📊 *${sym}*\n🔗 الشارت:\nhttps://www.tradingview.com/chart/?symbol=EGX:${sym}`,
+bot.onText(/\/status/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    `✅ البوت يعمل بنجاح\\n` +
+    `📊 الأسهم: ${EGX_STOCKS.length}\\n` +
+    `🕐 ${new Date().toLocaleString('ar-EG')}`,
     { parse_mode: 'Markdown' }
   );
 });
 
-console.log('✅ Full Market Scanner Ready!');
+bot.onText(/\/help/, (msg) => {
+  bot.sendMessage(msg.chat.id,
+    `*المساعدة:*\\n\\n` +
+    `/scan - فحص يدوي\\n` +
+    `/status - الحالة\\n` +
+    `/help - المساعدة\\n\\n` +
+    `⚠️ البيانات متأخرة 15-20 دقيقة`,
+    { parse_mode: 'Markdown' }
+  );
+});
+
+// ====== الفحص التلقائي ======
+
+function isTradingHours() {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  
+  // EGX: Sunday-Thursday, 10:00 - 14:30
+  if (day === 5 || day === 6) return false; // Friday, Saturday
+  if (hour < 10 || (hour === 14 && minute > 30) || hour > 14) return false;
+  return true;
+}
+
+async function scheduledScan() {
+  while (true) {
+    if (isTradingHours()) {
+      console.log('⏰ Trading hours - running scan');
+      await scanMarket();
+      await new Promise(r => setTimeout(r, 300000)); // 5 minutes
+    } else {
+      console.log('😴 Outside trading hours');
+      await new Promise(r => setTimeout(r, 600000)); // 10 minutes
+    }
+  }
+}
+
+// ====== Start ======
+
+console.log('✅ Bot started!');
+scheduledScan();
