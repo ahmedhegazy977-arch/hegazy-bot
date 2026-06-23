@@ -3,9 +3,11 @@ const axios = require('axios');
 
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
+const EODHD_API_KEY = process.env.EODHD_API_KEY;
+
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ====== أسهم البورصة المصرية (الأكثر نشاطاً) ======
+// ====== أسهم البورصة المصرية ======
 const EGX_STOCKS = [
   'COMI', 'EFID', 'ETEL', 'HRHO', 'TMGH', 'MNHD', 'SODIC', 'PHDC',
   'SWDY', 'EAST', 'ORWE', 'JUFO', 'KARO', 'ISPH', 'UNIP', 'MKPH',
@@ -19,12 +21,12 @@ const EGX_STOCKS = [
   'CAIB', 'CIHB', 'EBEK', 'EKBN', 'ESBE', 'NSGB', 'SAIB', 'THBK',
   'EGBN', 'HELI', 'LXIN', 'MOPH', 'NILE', 'QALY', 'PALM', 'EKHO',
   'EKZN', 'HOD', 'DOMT', 'FWRY', 'OCDI', 'TELS', 'ITPAC', 'ESRS',
-  'ZMZA', 'CIB', 'EGBN'
+  'ZMZA', 'CIB'
 ];
 
-console.log(`🚀 Hegazy Scanner Started! (${EGX_STOCKS.length} stocks)`);
+console.log(`🚀 Hegazy Scanner + EODHD Started! (${EGX_STOCKS.length} stocks)`);
 
-// ====== دوال الحسابات التقنية ======
+// ====== دوال الحسابات ======
 
 function calcEMA(data, period) {
   if (data.length < period) return null;
@@ -112,7 +114,6 @@ function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
 
 function calcADX(highs, lows, closes, period = 14) {
   if (highs.length < period * 2) return null;
-  
   const plusDM = [], minusDM = [], trList = [];
   for (let i = 1; i < highs.length; i++) {
     plusDM.push(Math.max(0, highs[i] - highs[i - 1]));
@@ -122,22 +123,45 @@ function calcADX(highs, lows, closes, period = 14) {
     const tr3 = Math.abs(lows[i] - closes[i - 1]);
     trList.push(Math.max(tr1, tr2, tr3));
   }
-  
   const atr = trList.slice(-period).reduce((a, b) => a + b, 0) / period;
   const plusDI = 100 * (plusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
   const minusDI = 100 * (minusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
-  
   return Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
 }
 
-// ====== جلب البيانات من Yahoo Finance ======
+// ====== جلب البيانات من EODHD ======
+
+async function getEODHDData(symbol) {
+  try {
+    // EODHD uses .CA suffix for Egyptian stocks
+    const url = `https://eodhd.com/api/eod/${symbol}.CA?api_token=${EODHD_API_KEY}&fmt=json&period=d&order=d`;
+    const resp = await axios.get(url, { timeout: 10000 });
+    
+    if (resp.status !== 200 || !Array.isArray(resp.data) || resp.data.length < 50) {
+      return null;
+    }
+    
+    const data = resp.data;
+    const closes = data.map(d => d.close).filter(v => v != null);
+    const highs = data.map(d => d.high).filter(v => v != null);
+    const lows = data.map(d => d.low).filter(v => v != null);
+    const volumes = data.map(d => d.volume).filter(v => v != null);
+    const opens = data.map(d => d.open).filter(v => v != null);
+    
+    if (closes.length < 50) return null;
+    
+    return { closes, highs, lows, volumes, opens, dates: data.map(d => d.date) };
+  } catch (e) {
+    console.error(`EODHD error ${symbol}: ${e.message}`);
+    return null;
+  }
+}
+
+// ====== جلب البيانات من Yahoo (احتياطي) ======
 
 async function getYahooData(symbol) {
   try {
-    // Try different suffixes for Egyptian stocks
     const suffixes = ['.CA', '.EG', ''];
-    let data = null;
-    
     for (const suffix of suffixes) {
       try {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}${suffix}?range=6mo&interval=1d`;
@@ -148,9 +172,7 @@ async function getYahooData(symbol) {
         
         if (resp.status === 200 && resp.data.chart?.result?.[0]) {
           const result = resp.data.chart.result[0];
-          const timestamps = result.timestamp || [];
           const quotes = result.indicators?.quote?.[0] || {};
-          
           const closes = (quotes.close || []).filter(v => v != null);
           const highs = (quotes.high || []).filter(v => v != null);
           const lows = (quotes.low || []).filter(v => v != null);
@@ -158,35 +180,50 @@ async function getYahooData(symbol) {
           const opens = (quotes.open || []).filter(v => v != null);
           
           if (closes.length >= 50) {
-            data = { closes, highs, lows, volumes, opens, timestamps };
-            break;
+            return { closes, highs, lows, volumes, opens, timestamps: result.timestamp };
           }
         }
-      } catch (e) {
-        continue;
-      }
+      } catch (e) { continue; }
     }
-    
-    return data;
+    return null;
   } catch (e) {
     return null;
   }
 }
 
+// ====== جلب البيانات (EODHD أولاً، Yahoo احتياطي) ======
+
+async function getStockData(symbol) {
+  // Try EODHD first
+  let data = await getEODHDData(symbol);
+  if (data) {
+    console.log(`✅ EODHD: ${symbol}`);
+    return data;
+  }
+  
+  // Fallback to Yahoo
+  data = await getYahooData(symbol);
+  if (data) {
+    console.log(`⚠️ Yahoo: ${symbol}`);
+    return data;
+  }
+  
+  console.log(`❌ No data: ${symbol}`);
+  return null;
+}
+
 // ====== تحليل السهم ======
 
 async function analyzeStock(symbol) {
-  const data = await getYahooData(symbol);
+  const data = await getStockData(symbol);
   if (!data) return null;
   
   const { closes, highs, lows, volumes } = data;
-  
   const close = closes[closes.length - 1];
   const high = highs[highs.length - 1];
   const low = lows[lows.length - 1];
   const vol = volumes[volumes.length - 1];
   
-  // Calculate indicators
   const ema20 = calcEMA(closes, 20);
   const ema50 = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
@@ -198,11 +235,9 @@ async function analyzeStock(symbol) {
   
   if (!ema20 || !ema50 || !ema200 || !rsi || !atr || !volAvg) return null;
   
-  // Levels
   const resistance = Math.max(...highs.slice(-21, -1));
   const breakoutLevel = resistance + (atr * 0.15);
   
-  // Conditions
   const trendUp = close > ema50 && close > ema200;
   const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
   const nearSupportV4 = Math.abs(close - ema20) / ema20 < 0.03;
@@ -265,10 +300,7 @@ async function analyzeStock(symbol) {
   const stage2 = stage1 && close > ema50 && close > ema200 && ema20 > ema50;
   const stage3 = stage2 && rsi >= 55 && rsi <= 75 && macdHist && macdHist > 0 && vol >= volAvg * 1.5;
   
-  // Market check (simplified - assume OK if we can't get EGX30)
-  const marketOK = true; // Simplified
-  
-  if (stage3 && marketOK) {
+  if (stage3) {
     const sl = close - (atr * 1.5);
     const tp1 = close + (atr * 2.5);
     const tp2 = close + (atr * 3.75);
@@ -289,7 +321,6 @@ async function analyzeStock(symbol) {
   
   if (signals.length === 0) return null;
   
-  // Return best signal
   const strongSignals = signals.filter(s => s.strength === 'strong');
   const best = strongSignals.length > 0 ? strongSignals[0] : signals[0];
   
@@ -360,7 +391,7 @@ async function sendSignal(signal) {
 async function sendSummary(results, total) {
   if (!results || results.length === 0) {
     await bot.sendMessage(CHAT_ID, 
-      '⚪ *لا توجد إشارات شراء حالياً*\\n\\nالسوق في حالة انتظار.\\n⏰ ' + new Date().toLocaleString('ar-EG'),
+      '⚪ *لا توجد إشارات شراء حالياً*\n\nالسوق في حالة انتظار.\n⏰ ' + new Date().toLocaleString('ar-EG'),
       { parse_mode: 'Markdown' }
     );
     return;
@@ -369,21 +400,21 @@ async function sendSummary(results, total) {
   const strong = results.filter(r => r.strength === 'strong');
   const normal = results.filter(r => r.strength === 'normal');
   
-  let msg = `🎯 *ملخص فحص السوق*\\n`;
-  msg += `📊 تم فحص ${total} سهم\\n`;
-  msg += `✅ ${results.length} إشارة نشطة\\n\\n`;
+  let msg = `🎯 *ملخص فحص السوق*\n`;
+  msg += `📊 تم فحص ${total} سهم\n`;
+  msg += `✅ ${results.length} إشارة نشطة\n\n`;
   
   if (strong.length > 0) {
-    msg += `💎 *إشارات قوية (${strong.length}):*\\n`;
-    strong.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\\n`);
+    msg += `💎 *إشارات قوية (${strong.length}):*\n`;
+    strong.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\n`);
   }
   
   if (normal.length > 0) {
-    msg += `\\n📈 *إشارات عادية (${normal.length}):*\\n`;
-    normal.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\\n`);
+    msg += `\n📈 *إشارات عادية (${normal.length}):*\n`;
+    normal.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\n`);
   }
   
-  msg += `\\n⏰ ${new Date().toLocaleString('ar-EG')}`;
+  msg += `\n⏰ ${new Date().toLocaleString('ar-EG')}`;
   
   try {
     await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
@@ -412,7 +443,6 @@ async function scanMarket() {
         }
       }
       
-      // Rate limit
       await new Promise(r => setTimeout(r, 500));
       
       if (scanned % 20 === 0) {
@@ -432,12 +462,13 @@ async function scanMarket() {
 
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `🤖 *Hegazy Market Scanner*\\n\\n` +
-    `أنا بوت متخصص في فحص البورصة المصرية بـ 5 أنظمة تحليل تقني.\\n\\n` +
-    `*الأوامر:*\\n` +
-    `/scan - فحص السوق بالكامل\\n` +
-    `/status - حالة البوت\\n` +
-    `/help - المساعدة\\n\\n` +
+    `🤖 *Hegazy Market Scanner + EODHD*\n\n` +
+    `أنا بوت متخصص في فحص البورصة المصرية بـ 5 أنظمة تحليل تقني.\n\n` +
+    `*المصدر:* EODHD (أولاً) + Yahoo Finance (احتياطي)\n\n` +
+    `*الأوامر:*\n` +
+    `/scan - فحص السوق بالكامل\n` +
+    `/status - حالة البوت\n` +
+    `/help - المساعدة\n\n` +
     `⏰ الفحص التلقائي كل 5 دقائق خلال الجلسة`,
     { parse_mode: 'Markdown' }
   );
@@ -450,8 +481,8 @@ bot.onText(/\/scan/, async (msg) => {
 
 bot.onText(/\/status/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `✅ البوت يعمل بنجاح\\n` +
-    `📊 الأسهم: ${EGX_STOCKS.length}\\n` +
+    `✅ البوت يعمل بنجاح\n` +
+    `📊 الأسهم: ${EGX_STOCKS.length}\n` +
     `🕐 ${new Date().toLocaleString('ar-EG')}`,
     { parse_mode: 'Markdown' }
   );
@@ -459,10 +490,10 @@ bot.onText(/\/status/, (msg) => {
 
 bot.onText(/\/help/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `*المساعدة:*\\n\\n` +
-    `/scan - فحص يدوي\\n` +
-    `/status - الحالة\\n` +
-    `/help - المساعدة\\n\\n` +
+    `*المساعدة:*\n\n` +
+    `/scan - فحص يدوي\n` +
+    `/status - الحالة\n` +
+    `/help - المساعدة\n\n` +
     `⚠️ البيانات متأخرة 15-20 دقيقة`,
     { parse_mode: 'Markdown' }
   );
@@ -472,12 +503,11 @@ bot.onText(/\/help/, (msg) => {
 
 function isTradingHours() {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun, 1=Mon, ..., 5=Fri, 6=Sat
+  const day = now.getDay();
   const hour = now.getHours();
   const minute = now.getMinutes();
   
-  // EGX: Sunday-Thursday, 10:00 - 14:30
-  if (day === 5 || day === 6) return false; // Friday, Saturday
+  if (day === 5 || day === 6) return false;
   if (hour < 10 || (hour === 14 && minute > 30) || hour > 14) return false;
   return true;
 }
@@ -487,15 +517,15 @@ async function scheduledScan() {
     if (isTradingHours()) {
       console.log('⏰ Trading hours - running scan');
       await scanMarket();
-      await new Promise(r => setTimeout(r, 300000)); // 5 minutes
+      await new Promise(r => setTimeout(r, 300000));
     } else {
       console.log('😴 Outside trading hours');
-      await new Promise(r => setTimeout(r, 600000)); // 10 minutes
+      await new Promise(r => setTimeout(r, 600000));
     }
   }
 }
 
 // ====== Start ======
 
-console.log('✅ Bot started!');
+console.log('✅ Bot started with EODHD!');
 scheduledScan();
