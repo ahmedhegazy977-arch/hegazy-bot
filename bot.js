@@ -3,11 +3,20 @@ const axios = require('axios');
 
 const TOKEN = process.env.TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const EODHD_API_KEY = process.env.EODHD_API_KEY;
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+// Use webhook instead of polling for Railway
+const bot = new TelegramBot(TOKEN, { 
+  webHook: {
+    port: process.env.PORT || 3000
+  }
+});
 
-// ====== أسهم البورصة المصرية ======
+// Set webhook URL (Railway gives you a URL)
+const WEBHOOK_URL = process.env.RAILWAY_STATIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
+if (WEBHOOK_URL) {
+  bot.setWebHook(`${WEBHOOK_URL}/bot${TOKEN}`);
+}
+
 const EGX_STOCKS = [
   'COMI', 'EFID', 'ETEL', 'HRHO', 'TMGH', 'MNHD', 'SODIC', 'PHDC',
   'SWDY', 'EAST', 'ORWE', 'JUFO', 'KARO', 'ISPH', 'UNIP', 'MKPH',
@@ -24,7 +33,7 @@ const EGX_STOCKS = [
   'ZMZA', 'CIB'
 ];
 
-console.log(`🚀 Hegazy Scanner + EODHD Started! (${EGX_STOCKS.length} stocks)`);
+console.log(`🚀 Hegazy Scanner - ${EGX_STOCKS.length} stocks`);
 
 // ====== دوال الحسابات ======
 
@@ -36,18 +45,6 @@ function calcEMA(data, period) {
     ema = (data[i] - ema) * k + ema;
   }
   return ema;
-}
-
-function calcEMASeries(data, period) {
-  if (data.length < period) return [];
-  const k = 2 / (period + 1);
-  let ema = data.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  const result = [ema];
-  for (let i = period; i < data.length; i++) {
-    ema = (data[i] - ema) * k + ema;
-    result.push(ema);
-  }
-  return result;
 }
 
 function calcRSI(closes, period = 14) {
@@ -89,98 +86,33 @@ function calcSMA(data, period) {
   return data.slice(-period).reduce((a, b) => a + b, 0) / period;
 }
 
-function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
-  const emaFast = calcEMASeries(closes, fast);
-  const emaSlow = calcEMASeries(closes, slow);
-  if (emaFast.length < slow || emaSlow.length < slow) return [null, null, null];
-  
-  const macdLine = [];
-  for (let i = slow - 1; i < emaFast.length; i++) {
-    macdLine.push(emaFast[i] - emaSlow[i]);
-  }
-  
-  const signalLine = calcEMASeries(macdLine, signal);
-  const histogram = [];
-  for (let i = 0; i < signalLine.length; i++) {
-    histogram.push(macdLine[i + macdLine.length - signalLine.length] - signalLine[i]);
-  }
-  
-  return [
-    macdLine[macdLine.length - 1],
-    signalLine[signalLine.length - 1],
-    histogram[histogram.length - 1]
-  ];
-}
-
-function calcADX(highs, lows, closes, period = 14) {
-  if (highs.length < period * 2) return null;
-  const plusDM = [], minusDM = [], trList = [];
-  for (let i = 1; i < highs.length; i++) {
-    plusDM.push(Math.max(0, highs[i] - highs[i - 1]));
-    minusDM.push(Math.max(0, lows[i - 1] - lows[i]));
-    const tr1 = highs[i] - lows[i];
-    const tr2 = Math.abs(highs[i] - closes[i - 1]);
-    const tr3 = Math.abs(lows[i] - closes[i - 1]);
-    trList.push(Math.max(tr1, tr2, tr3));
-  }
-  const atr = trList.slice(-period).reduce((a, b) => a + b, 0) / period;
-  const plusDI = 100 * (plusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
-  const minusDI = 100 * (minusDM.slice(-period).reduce((a, b) => a + b, 0) / period) / atr;
-  return Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
-}
-
-// ====== جلب البيانات من EODHD ======
-
-async function getEODHDData(symbol) {
-  try {
-    // EODHD uses .CA suffix for Egyptian stocks
-    const url = `https://eodhd.com/api/eod/${symbol}.CA?api_token=${EODHD_API_KEY}&fmt=json&period=d&order=d`;
-    const resp = await axios.get(url, { timeout: 10000 });
-    
-    if (resp.status !== 200 || !Array.isArray(resp.data) || resp.data.length < 50) {
-      return null;
-    }
-    
-    const data = resp.data;
-    const closes = data.map(d => d.close).filter(v => v != null);
-    const highs = data.map(d => d.high).filter(v => v != null);
-    const lows = data.map(d => d.low).filter(v => v != null);
-    const volumes = data.map(d => d.volume).filter(v => v != null);
-    const opens = data.map(d => d.open).filter(v => v != null);
-    
-    if (closes.length < 50) return null;
-    
-    return { closes, highs, lows, volumes, opens, dates: data.map(d => d.date) };
-  } catch (e) {
-    console.error(`EODHD error ${symbol}: ${e.message}`);
-    return null;
-  }
-}
-
-// ====== جلب البيانات من Yahoo (احتياطي) ======
+// ====== جلب البيانات من Yahoo ======
 
 async function getYahooData(symbol) {
   try {
     const suffixes = ['.CA', '.EG', ''];
+    
     for (const suffix of suffixes) {
       try {
         const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}${suffix}?range=6mo&interval=1d`;
         const resp = await axios.get(url, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-          timeout: 8000
+          headers: { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          },
+          timeout: 10000
         });
         
         if (resp.status === 200 && resp.data.chart?.result?.[0]) {
           const result = resp.data.chart.result[0];
           const quotes = result.indicators?.quote?.[0] || {};
+          
           const closes = (quotes.close || []).filter(v => v != null);
           const highs = (quotes.high || []).filter(v => v != null);
           const lows = (quotes.low || []).filter(v => v != null);
           const volumes = (quotes.volume || []).filter(v => v != null);
-          const opens = (quotes.open || []).filter(v => v != null);
           
           if (closes.length >= 50) {
-            return { closes, highs, lows, volumes, opens, timestamps: result.timestamp };
+            return { closes, highs, lows, volumes };
           }
         }
       } catch (e) { continue; }
@@ -191,37 +123,15 @@ async function getYahooData(symbol) {
   }
 }
 
-// ====== جلب البيانات (EODHD أولاً، Yahoo احتياطي) ======
-
-async function getStockData(symbol) {
-  // Try EODHD first
-  let data = await getEODHDData(symbol);
-  if (data) {
-    console.log(`✅ EODHD: ${symbol}`);
-    return data;
-  }
-  
-  // Fallback to Yahoo
-  data = await getYahooData(symbol);
-  if (data) {
-    console.log(`⚠️ Yahoo: ${symbol}`);
-    return data;
-  }
-  
-  console.log(`❌ No data: ${symbol}`);
-  return null;
-}
-
 // ====== تحليل السهم ======
 
 async function analyzeStock(symbol) {
-  const data = await getStockData(symbol);
+  const data = await getYahooData(symbol);
   if (!data) return null;
   
   const { closes, highs, lows, volumes } = data;
   const close = closes[closes.length - 1];
   const high = highs[highs.length - 1];
-  const low = lows[lows.length - 1];
   const vol = volumes[volumes.length - 1];
   
   const ema20 = calcEMA(closes, 20);
@@ -230,8 +140,6 @@ async function analyzeStock(symbol) {
   const rsi = calcRSI(closes, 14);
   const atr = calcATR(highs, lows, closes, 14);
   const volAvg = calcSMA(volumes, 20);
-  const adx = calcADX(highs, lows, closes, 14);
-  const [macdLine, macdSignal, macdHist] = calcMACD(closes, 12, 26, 9);
   
   if (!ema20 || !ema50 || !ema200 || !rsi || !atr || !volAvg) return null;
   
@@ -240,89 +148,32 @@ async function analyzeStock(symbol) {
   
   const trendUp = close > ema50 && close > ema200;
   const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
-  const nearSupportV4 = Math.abs(close - ema20) / ema20 < 0.03;
-  const rsiOKPullback = rsi >= 40 && rsi <= 70;
-  const rsiOKBreakout = rsi >= 45 && rsi <= 75;
-  const rsiOKV4 = rsi >= 45 && rsi <= 65;
-  const rsiOKBrk = rsi >= 40 && rsi <= 70;
+  const rsiOK = rsi >= 40 && rsi <= 70;
   const volOK = vol > volAvg * 1.0;
-  const volOKBrk = vol > volAvg * 1.2;
-  const isRanging = adx !== null && adx < 15;
-  const notOverbought = rsi < 78;
-  const momentum = closes.length >= 2 ? (close - closes[closes.length - 2]) / closes[closes.length - 2] * 100 > 0.8 : false;
-  const strongClose = close >= high * 0.96;
-  const trendUpSMC = close > calcSMA(closes, 20);
-  const volConditionSMC = vol > calcSMA(volumes, 5);
   
   const signals = [];
   
-  // نظام 1: الارتداد والكسر
-  if (trendUp && nearSupport && rsiOKPullback && volOK) {
+  // نظام 1: الارتداد
+  if (trendUp && nearSupport && rsiOK && volOK) {
     const sl = close - (atr * 1.5);
     const tp1 = close + (atr * 2.5);
     const tp2 = close + (atr * 4.5);
     const rr = (tp1 - close) / (close - sl);
-    signals.push({ system: 'نظام الارتداد والكسر', signal: 'شراء عند الارتداد', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
+    signals.push({ system: 'نظام الارتداد', signal: 'شراء عند الارتداد', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
   }
   
-  if (close > breakoutLevel && rsiOKBreakout && volOK) {
+  // نظام 2: الكسر
+  if (close > breakoutLevel && rsi >= 45 && rsi <= 75 && volOK) {
     const sl = close - (atr * 1.5);
     const tp1 = close + (atr * 2.5);
     const tp2 = close + (atr * 4.5);
     const rr = (tp1 - close) / (close - sl);
-    signals.push({ system: 'نظام الارتداد والكسر', signal: 'شراء عند الكسر', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
-  }
-  
-  // نظام 2: العمل
-  if (trendUp && !isRanging && volOK && rsiOKV4 && nearSupportV4) {
-    const sl = close - (atr * 1.5);
-    const tp1 = close + (atr * 2.5);
-    const tp2 = close + (atr * 4.5);
-    const rr = (tp1 - close) / (close - sl);
-    signals.push({ system: 'نظام العمل', signal: 'إشارة شراء', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
-  }
-  
-  // نظام 3: كسر المقاومة المؤكد
-  const brokeRes = close > resistance;
-  if (brokeRes && volOKBrk && rsiOKBrk && trendUp) {
-    const entry = close;
-    const sl = entry - (atr * 1.5);
-    const tp1 = entry + (atr * 2.5);
-    const risk = entry - sl;
-    const rr = risk > 0 ? (tp1 - entry) / risk : 0;
-    if (rr >= 1.3) {
-      signals.push({ system: 'نظام كسر المقاومة', signal: 'كسر مقاومة مؤكد', entry, sl, tp1, tp2: entry + (atr * 3.75), rr, strength: 'strong' });
-    }
-  }
-  
-  // نظام 4: الثلاث مراحل
-  const stage1 = vol >= 1000000 && vol / volAvg >= 1.2;
-  const stage2 = stage1 && close > ema50 && close > ema200 && ema20 > ema50;
-  const stage3 = stage2 && rsi >= 55 && rsi <= 75 && macdHist && macdHist > 0 && vol >= volAvg * 1.5;
-  
-  if (stage3) {
-    const sl = close - (atr * 1.5);
-    const tp1 = close + (atr * 2.5);
-    const tp2 = close + (atr * 3.75);
-    const rr = (tp1 - close) / (close - sl);
-    signals.push({ system: 'نظام الثلاث مراحل', signal: 'شراء ثلاثي', entry: close, sl, tp1, tp2, rr, strength: 'strong' });
-  }
-  
-  // نظام 5: الأموال الذكية
-  const lowestLow = lows.length >= 5 ? Math.min(...lows.slice(-5)) : low;
-  const stopLossSMC = lowestLow * 0.97;
-  const riskSMC = close - stopLossSMC;
-  const target1SMC = close + (riskSMC * 2);
-  
-  if (strongClose && volConditionSMC && trendUpSMC && momentum && notOverbought) {
-    const rr = (target1SMC - close) / (close - stopLossSMC);
-    signals.push({ system: 'نظام الأموال الذكية', signal: 'شراء أموال ذكية', entry: close, sl: stopLossSMC, tp1: target1SMC, tp2: close + (riskSMC * 3), rr, strength: 'strong' });
+    signals.push({ system: 'نظام الكسر', signal: 'شراء عند الكسر', entry: close, sl, tp1, tp2, rr, strength: 'normal' });
   }
   
   if (signals.length === 0) return null;
   
-  const strongSignals = signals.filter(s => s.strength === 'strong');
-  const best = strongSignals.length > 0 ? strongSignals[0] : signals[0];
+  const best = signals[0];
   
   return {
     ...best,
@@ -334,8 +185,7 @@ async function analyzeStock(symbol) {
     ema200,
     volume: vol,
     volAvg,
-    atr,
-    allSignals: signals
+    atr
   };
 }
 
@@ -344,89 +194,29 @@ async function analyzeStock(symbol) {
 async function sendSignal(signal) {
   if (!signal) return;
   
-  const emojis = {
-    'كسر مقاومة مؤكد': '🚀',
-    'شراء عند الارتداد': '📈',
-    'شراء عند الكسر': '💥',
-    'إشارة شراء': '✅',
-    'شراء ثلاثي': '📊',
-    'شراء أموال ذكية': '💎'
-  };
-  
-  const em = emojis[signal.signal] || '🔔';
-  
-  let msg = `${em} *إشارة جديدة - ${signal.symbol}*\n\n`;
-  msg += `📊 *النظام:* ${signal.system}\n`;
-  msg += `🎯 *الإشارة:* ${signal.signal}\n\n`;
-  msg += `💰 *السعر الحالي:* ${signal.price.toFixed(2)} EGP\n`;
-  msg += `🚪 *سعر الدخول:* ${signal.entry.toFixed(2)}\n`;
-  msg += `🛑 *وقف الخسارة:* ${signal.sl.toFixed(2)}\n`;
-  msg += `🎯 *الهدف الأول:* ${signal.tp1.toFixed(2)}\n`;
-  msg += `🎯 *الهدف الثاني:* ${signal.tp2.toFixed(2)}\n`;
-  msg += `📈 *R/R:* ${signal.rr.toFixed(2)}\n\n`;
-  msg += `📉 *المؤشرات:*\n`;
-  msg += `• RSI: ${signal.rsi.toFixed(1)}\n`;
-  msg += `• EMA20: ${signal.ema20.toFixed(2)}\n`;
-  msg += `• EMA50: ${signal.ema50.toFixed(2)}\n`;
-  msg += `• EMA200: ${signal.ema200.toFixed(2)}\n`;
-  msg += `• ATR: ${signal.atr.toFixed(2)}\n`;
-  msg += `• الحجم: ${signal.volume.toLocaleString()} (متوسط: ${signal.volAvg.toLocaleString()})\n\n`;
-  msg += `⏰ ${new Date().toLocaleString('ar-EG')}`;
-  
-  if (signal.allSignals.length > 1) {
-    msg += `\n\n🔥 *أنظمة إضافية متحققة:*\n`;
-    signal.allSignals.slice(1).forEach(s => {
-      msg += `• ${s.system}: ${s.signal}\n`;
-    });
-  }
+  const msg = `🎯 *إشارة جديدة - ${signal.symbol}*\n\n` +
+    `📊 *النظام:* ${signal.system}\n` +
+    `🎯 *الإشارة:* ${signal.signal}\n\n` +
+    `💰 *السعر:* ${signal.price.toFixed(2)} EGP\n` +
+    `🚪 *الدخول:* ${signal.entry.toFixed(2)}\n` +
+    `🛑 *الوقف:* ${signal.sl.toFixed(2)}\n` +
+    `🎯 *الهدف:* ${signal.tp1.toFixed(2)}\n` +
+    `📈 *R/R:* ${signal.ratio.toFixed(2)}\n\n` +
+    `📉 RSI: ${signal.rsi.toFixed(1)} | ATR: ${signal.atr.toFixed(2)}\n` +
+    `⏰ ${new Date().toLocaleString('ar-EG')}`;
   
   try {
     await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-    console.log(`✅ Signal sent: ${signal.symbol}`);
+    console.log(`✅ Signal: ${signal.symbol}`);
   } catch (e) {
-    console.error(`❌ Failed to send: ${e.message}`);
-  }
-}
-
-async function sendSummary(results, total) {
-  if (!results || results.length === 0) {
-    await bot.sendMessage(CHAT_ID, 
-      '⚪ *لا توجد إشارات شراء حالياً*\n\nالسوق في حالة انتظار.\n⏰ ' + new Date().toLocaleString('ar-EG'),
-      { parse_mode: 'Markdown' }
-    );
-    return;
-  }
-  
-  const strong = results.filter(r => r.strength === 'strong');
-  const normal = results.filter(r => r.strength === 'normal');
-  
-  let msg = `🎯 *ملخص فحص السوق*\n`;
-  msg += `📊 تم فحص ${total} سهم\n`;
-  msg += `✅ ${results.length} إشارة نشطة\n\n`;
-  
-  if (strong.length > 0) {
-    msg += `💎 *إشارات قوية (${strong.length}):*\n`;
-    strong.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\n`);
-  }
-  
-  if (normal.length > 0) {
-    msg += `\n📈 *إشارات عادية (${normal.length}):*\n`;
-    normal.forEach(r => msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\n`);
-  }
-  
-  msg += `\n⏰ ${new Date().toLocaleString('ar-EG')}`;
-  
-  try {
-    await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
-  } catch (e) {
-    console.error(`❌ Summary failed: ${e.message}`);
+    console.error(`❌ Send failed: ${e.message}`);
   }
 }
 
 // ====== الفحص ======
 
 async function scanMarket() {
-  console.log('🔍 Starting market scan...');
+  console.log('🔍 Starting scan...');
   const results = [];
   let scanned = 0;
   
@@ -437,24 +227,36 @@ async function scanMarket() {
       
       if (result) {
         results.push(result);
-        if (result.strength === 'strong') {
-          await sendSignal(result);
-          await new Promise(r => setTimeout(r, 1000));
-        }
+        await sendSignal(result);
+        await new Promise(r => setTimeout(r, 1000));
       }
       
       await new Promise(r => setTimeout(r, 500));
       
       if (scanned % 20 === 0) {
-        console.log(`📊 Scanned ${scanned}/${EGX_STOCKS.length}...`);
+        console.log(`📊 ${scanned}/${EGX_STOCKS.length}`);
       }
     } catch (e) {
-      console.error(`❌ Error ${symbol}: ${e.message}`);
+      console.error(`❌ ${symbol}: ${e.message}`);
     }
   }
   
-  await sendSummary(results, scanned);
-  console.log(`✅ Scan complete. Found ${results.length} signals.`);
+  // Send summary
+  if (results.length === 0) {
+    await bot.sendMessage(CHAT_ID, 
+      '⚪ لا توجد إشارات حالياً\n⏰ ' + new Date().toLocaleString('ar-EG'),
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    let msg = `🎯 *ملخص الفحص*\n📊 ${scanned} سهم | ✅ ${results.length} إشارة\n\n`;
+    results.forEach(r => {
+      msg += `• ${r.symbol} @ ${r.price.toFixed(2)} - ${r.signal}\n`;
+    });
+    msg += `\n⏰ ${new Date().toLocaleString('ar-EG')}`;
+    await bot.sendMessage(CHAT_ID, msg, { parse_mode: 'Markdown' });
+  }
+  
+  console.log(`✅ Done: ${results.length} signals`);
   return results;
 }
 
@@ -462,70 +264,45 @@ async function scanMarket() {
 
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `🤖 *Hegazy Market Scanner + EODHD*\n\n` +
-    `أنا بوت متخصص في فحص البورصة المصرية بـ 5 أنظمة تحليل تقني.\n\n` +
-    `*المصدر:* EODHD (أولاً) + Yahoo Finance (احتياطي)\n\n` +
-    `*الأوامر:*\n` +
-    `/scan - فحص السوق بالكامل\n` +
-    `/status - حالة البوت\n` +
-    `/help - المساعدة\n\n` +
-    `⏰ الفحص التلقائي كل 5 دقائق خلال الجلسة`,
+    `🤖 *Hegazy Scanner*\n\n` +
+    `/scan - فحص السوق\n` +
+    `/status - الحالة\n` +
+    `/help - المساعدة`,
     { parse_mode: 'Markdown' }
   );
 });
 
 bot.onText(/\/scan/, async (msg) => {
-  await bot.sendMessage(msg.chat.id, '🔍 جاري فحص السوق... قد يستغرق 5-10 دقائق');
+  await bot.sendMessage(msg.chat.id, '🔍 جاري الفحص...');
   await scanMarket();
 });
 
 bot.onText(/\/status/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `✅ البوت يعمل بنجاح\n` +
-    `📊 الأسهم: ${EGX_STOCKS.length}\n` +
-    `🕐 ${new Date().toLocaleString('ar-EG')}`,
+    `✅ شغال\n📊 ${EGX_STOCKS.length} سهم\n🕐 ${new Date().toLocaleString('ar-EG')}`,
     { parse_mode: 'Markdown' }
   );
 });
 
 bot.onText(/\/help/, (msg) => {
   bot.sendMessage(msg.chat.id,
-    `*المساعدة:*\n\n` +
-    `/scan - فحص يدوي\n` +
-    `/status - الحالة\n` +
-    `/help - المساعدة\n\n` +
-    `⚠️ البيانات متأخرة 15-20 دقيقة`,
+    `/scan - فحص\n/status - حالة\n/help - مساعدة`,
     { parse_mode: 'Markdown' }
   );
 });
 
-// ====== الفحص التلقائي ======
+// ====== Start ======
 
-function isTradingHours() {
+console.log('✅ Bot started!');
+
+// Run scan every 5 minutes during trading hours
+setInterval(() => {
   const now = new Date();
   const day = now.getDay();
   const hour = now.getHours();
-  const minute = now.getMinutes();
   
-  if (day === 5 || day === 6) return false;
-  if (hour < 10 || (hour === 14 && minute > 30) || hour > 14) return false;
-  return true;
-}
-
-async function scheduledScan() {
-  while (true) {
-    if (isTradingHours()) {
-      console.log('⏰ Trading hours - running scan');
-      await scanMarket();
-      await new Promise(r => setTimeout(r, 300000));
-    } else {
-      console.log('😴 Outside trading hours');
-      await new Promise(r => setTimeout(r, 600000));
-    }
+  if (day < 5 && hour >= 10 && hour < 15) {
+    console.log('⏰ Auto scan');
+    scanMarket();
   }
-}
-
-// ====== Start ======
-
-console.log('✅ Bot started with EODHD!');
-scheduledScan();
+}, 300000); // 5 minutes
