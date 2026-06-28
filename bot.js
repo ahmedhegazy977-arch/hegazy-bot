@@ -79,8 +79,7 @@ async function fetchStockData(symbol) {
   if (cached) return cached;
   
   try {
-    const url = `https://api.twelvedata.com/time_series?symbol=${symbol}:EGX&interval=1day&outputsize=100&apikey=${API_KEY}`;
-    const { data } = await axios.get(url, { timeout: 8000 });
+const url = `https://api.thunderdata.com/stocks/${symbol}?apikey=${THUNDER_API_KEY}`;    const { data } = await axios.get(url, { timeout: 8000 });
     
     if (data.status === 'error' || !data.values) return null;
     
