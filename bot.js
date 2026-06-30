@@ -73,10 +73,7 @@ function calcATR(highs, lows, closes, period = 14) {
   if (closes.length < period + 1) return null;
   const tr = [];
   for (let i = 1; i < closes.length; i++) {
-    const h_l = highs[i] - lows[i];
-    const h_cp = Math.abs(highs[i] - closes[i-1]);
-    const l_cp = Math.abs(lows[i] - closes[i-1]);
-    tr.push(Math.max(h_l, h_cp, l_cp));
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])));
   }
   let atr = tr.slice(0, period).reduce((a,b) => a+b, 0) / period;
   for (let i = period; i < tr.length; i++) atr = (atr * (period-1) + tr[i]) / period;
@@ -122,106 +119,152 @@ function analyzeStock(data) {
   const ema50 = calcEMA(closes, 50);
   const ema200 = calcEMA(closes, 200);
   const rsi = calcRSI(closes);
-  const atr = calcATR(highs, lows, closes);
+  const atr = calcATR(highs, lows, closes, 14);
   
   if (!ema20 || !ema50 || !ema200 || !rsi || !atr) return null;
   
   const resistance = Math.max(...highs.slice(-20));
+  const support = Math.min(...lows.slice(-20));
+  const breakoutLevel = resistance + (atr * 0.15);
   
-  // نظام 1: Pullback
+  let signal = null, type = '', entry = null, sl = null, tp1 = null, tp2 = null, system = '', strength = 0;
+  
+  // ========== نظام 1: Pullback & Breakout ==========
   const trendUp = close > ema50 && close > ema200;
-  const nearSupport = Math.abs(close - ema20) / ema20 < 0.08;
-  const rsiOK = rsi >= 35 && rsi <= 75;
-  const volOK = vol > volAvg * 0.7;
+  const nearSupport = Math.abs(close - ema20) / ema20 < 0.05;
+  const rsiOK = rsi >= 40 && rsi <= 70;
+  const volOK = vol > volAvg * 1.0;
   
-  if (trendUp && nearSupport && rsiOK) {
-    return {
-      symbol: data.symbol,
-      price: close.toFixed(2),
-      signal: '📈 Pullback from Support',
-      type: 'Pullback',
-      entry: close.toFixed(2),
-      sl: (close - atr * 1.5).toFixed(2),
-      tp1: (close + atr * 2.5).toFixed(2),
-      tp2: (close + atr * 4.5).toFixed(2),
-      rsi: rsi.toFixed(1),
-      system: 'Pullback'
-    };
+  if (trendUp && nearSupport && rsiOK && volOK) {
+    signal = '📈 Buy on Pullback';
+    type = 'Pullback';
+    entry = close;
+    sl = close - (atr * 1.5);
+    tp1 = close + (atr * 2.5);
+    tp2 = close + (atr * 4.5);
+    system = 'Pullback & Breakout';
+    strength = 5;
+  } else if (close > breakoutLevel && rsi >= 45 && rsi <= 75 && volOK) {
+    signal = '💥 Breakout Buy';
+    type = 'Breakout';
+    entry = breakoutLevel;
+    sl = breakoutLevel - (atr * 1.5);
+    tp1 = breakoutLevel + (atr * 2.5);
+    tp2 = breakoutLevel + (atr * 4.5);
+    system = 'Pullback & Breakout';
+    strength = 6;
   }
   
-  // نظام 2: Breakout
-  if (close > resistance && rsi >= 40 && rsi <= 80) {
-    return {
-      symbol: data.symbol,
-      price: close.toFixed(2),
-      signal: '💥 Breakout Resistance',
-      type: 'Breakout',
-      entry: close.toFixed(2),
-      sl: (close - atr * 1.5).toFixed(2),
-      tp1: (close + atr * 2.5).toFixed(2),
-      tp2: (close + atr * 3.75).toFixed(2),
-      rsi: rsi.toFixed(1),
-      system: 'Breakout'
-    };
+  // ========== نظام 2: V4 System ==========
+  if (!signal) {
+    const adx = 10;
+    const isRanging = adx < 15;
+    const nearSupportV4 = Math.abs(close - ema20) / ema20 < 0.03;
+    const rsiV4 = rsi >= 45 && rsi <= 65;
+    if (trendUp && !isRanging && volOK && rsiV4 && nearSupportV4) {
+      signal = '✅ V4 Buy Signal';
+      type = 'V4';
+      entry = close;
+      sl = close - (atr * 1.5);
+      tp1 = close + (atr * 2.5);
+      tp2 = close + (atr * 4.5);
+      system = 'V4 System';
+      strength = 5;
+    }
   }
   
-  // نظام 3: Crossover
-  const prevCloses = closes.slice(0, -1);
-  const prevEma20 = calcEMA(prevCloses, 20);
-  const prevEma50 = calcEMA(prevCloses, 50);
-  
-  if (prevEma20 && prevEma50 && prevEma20 <= prevEma50 && ema20 > ema50) {
-    return {
-      symbol: data.symbol,
-      price: close.toFixed(2),
-      signal: '🔄 EMA20/EMA50 Crossover',
-      type: 'Crossover',
-      entry: close.toFixed(2),
-      sl: (close - atr * 2).toFixed(2),
-      tp1: (close + atr * 3).toFixed(2),
-      tp2: (close + atr * 5).toFixed(2),
-      rsi: rsi.toFixed(1),
-      system: 'Crossover'
-    };
+  // ========== نظام 3: Confirmed Breakout ==========
+  if (!signal) {
+    const volOK_brk = vol >= volAvg * 1.2;
+    const rsiOK_brk = rsi >= 40 && rsi <= 70;
+    const brokeRes = close > resistance;
+    const risk = atr * 1.5;
+    const reward = atr * 2.5;
+    const rr = reward / risk;
+    if (brokeRes && volOK_brk && rsiOK_brk && trendUp && rr >= 1.3) {
+      signal = '🚀 Confirmed Breakout';
+      type = 'Confirmed Breakout';
+      entry = close;
+      sl = close - (atr * 1.5);
+      tp1 = close + (atr * 2.5);
+      tp2 = close + (atr * 3.75);
+      system = 'Confirmed Breakout';
+      strength = 7;
+    }
   }
   
-  // نظام 4: Momentum
-  if (close > prevClose * 1.03 && vol > volAvg && rsi > 50 && rsi < 75) {
-    return {
-      symbol: data.symbol,
-      price: close.toFixed(2),
-      signal: '⚡ Strong Momentum',
-      type: 'Momentum',
-      entry: close.toFixed(2),
-      sl: (close - atr * 1.5).toFixed(2),
-      tp1: (close + atr * 2.5).toFixed(2),
-      tp2: (close + atr * 4).toFixed(2),
-      rsi: rsi.toFixed(1),
-      system: 'Momentum'
-    };
+  // ========== نظام 4: 3-Stage System ==========
+  if (!signal) {
+    const stage1 = vol >= 1000000 && vol / volAvg >= 1.2;
+    const stage2 = stage1 && close > ema50 && close > ema200 && ema20 > ema50;
+    const stage3 = stage2 && rsi >= 55 && rsi <= 75 && vol >= volAvg * 1.5;
+    if (stage3) {
+      signal = ' 3-Stage Buy';
+      type = '3-Stage';
+      entry = close;
+      sl = close - (atr * 1.5);
+      tp1 = close + (atr * 2.5);
+      tp2 = close + (atr * 3.75);
+      system = '3-Stage System';
+      strength = 6;
+    }
   }
   
-  // نظام 5: Smart Money Concept (SMC)
-  const lowestLow = Math.min(...lows.slice(-5));
-  const stopLoss_smc = lowestLow * 0.97;
-  const risk_smc = close - stopLoss_smc;
-  const strongClose = close >= high * 0.96;
-  const volCond_smc = vol > volumes.slice(-5).reduce((a,b) => a+b, 0) / 5;
-  const momentum_smc = ((close - prevClose) / prevClose) * 100 > 0.8;
-  const notOverbought = rsi < 78;
+  // ========== نظام 5: Smart Money (SMC) ==========
+  if (!signal) {
+    const lowestLow = Math.min(...lows.slice(-5));
+    const stopLossSMC = lowestLow * 0.97;
+    const riskSMC = close - stopLossSMC;
+    const strongClose = close >= high * 0.96;
+    const volCondSMC = vol > volumes.slice(-5).reduce((a,b) => a+b, 0) / 5;
+    const momentum = ((close - prevClose) / prevClose) * 100 > 0.8;
+    if (strongClose && volCondSMC && trendUp && momentum && rsi < 78) {
+      signal = '💎 Smart Money Buy';
+      type = 'SMC';
+      entry = close;
+      sl = stopLossSMC;
+      tp1 = close + (riskSMC * 2);
+      tp2 = close + (riskSMC * 3);
+      system = 'Smart Money Concept';
+      strength = 6;
+    }
+  }
   
-  if (strongClose && volCond_smc && trendUp && momentum_smc && notOverbought) {
+  // ========== نظام 6: AI Insight (Buy on Dips) ==========
+  if (!signal) {
+    const isUptrend = close > ema50 && close > ema200;
+    const isNearSupport = close <= ema20 * 1.02;
+    const rsiNotOverbought = rsi < 70;
+    const priceAboveSupport = close > support * 1.01;
+    
+    if (isUptrend && isNearSupport && rsiNotOverbought && priceAboveSupport) {
+      signal = '🟢 BUY ON DIPS';
+      type = 'AI Insight';
+      entry = close;
+      sl = support;
+      tp1 = resistance;
+      tp2 = resistance + (atr * 2);
+      system = 'AI Insight System';
+      strength = 4;
+    }
+  }
+  
+  if (signal) {
     return {
       symbol: data.symbol,
       price: close.toFixed(2),
-      signal: '💎 Smart Money Buy',
-      type: 'SMC',
-      entry: close.toFixed(2),
-      sl: stopLoss_smc.toFixed(2),
-      tp1: (close + risk_smc * 2).toFixed(2),
-      tp2: (close + risk_smc * 3).toFixed(2),
+      signal,
+      type,
+      entry: entry.toFixed(2),
+      sl: sl.toFixed(2),
+      tp1: tp1.toFixed(2),
+      tp2: tp2.toFixed(2),
       rsi: rsi.toFixed(1),
-      system: 'SMC'
+      system,
+      strength,
+      trend: trendUp ? 'UPTREND' : 'DOWNTREND',
+      support: support.toFixed(2),
+      resistance: resistance.toFixed(2)
     };
   }
   
@@ -230,62 +273,40 @@ function analyzeStock(data) {
 
 function sendResults(results, chatId, scanType) {
   if (results.length > 0) {
-    const pullbacks = results.filter(r => r.type === 'Pullback');
-    const breakouts = results.filter(r => r.type === 'Breakout');
-    const crossovers = results.filter(r => r.type === 'Crossover');
-    const momentum = results.filter(r => r.type === 'Momentum');
-    const smc = results.filter(r => r.type === 'SMC');
+    results.sort((a, b) => b.strength - a.strength);
     
     let message = `🎯 *${scanType} - ${results.length} Signals*\n\n`;
     
-    if (breakouts.length > 0) {
-      message += `💥 *Breakout (${breakouts.length}):*\n`;
-      breakouts.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
+    const grouped = {};
+    results.forEach(r => {
+      if (!grouped[r.type]) grouped[r.type] = [];
+      grouped[r.type].push(r);
+    });
+    
+    const typeIcons = {
+      'Pullback': '',
+      'Breakout': '',
+      'V4': '✅',
+      'Confirmed Breakout': '🚀',
+      '3-Stage': '📊',
+      'SMC': '💎',
+      'AI Insight': '🟢'
+    };
+    
+    Object.keys(grouped).forEach(type => {
+      const items = grouped[type];
+      message += `${typeIcons[type] || '📌'} *${type} (${items.length}):*\n`;
+      items.forEach(r => {
+        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi} | Str: ${r.strength}/7\n`;
         message += `  📍 Entry: ${r.entry} | 🛑 Stop: ${r.sl}\n`;
-        message += `  🎯 Targets: ${r.tp1} / ${r.tp2}\n\n`;
+        message += `   Targets: ${r.tp1} / ${r.tp2}\n`;
+        message += `   ${r.system}\n\n`;
       });
-    }
-    
-    if (pullbacks.length > 0) {
-      message += `\n📈 *Pullback (${pullbacks.length}):*\n`;
-      pullbacks.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  📍 Entry: ${r.entry} |  Stop: ${r.sl}\n`;
-        message += `  🎯 Targets: ${r.tp1} / ${r.tp2}\n\n`;
-      });
-    }
-    
-    if (crossovers.length > 0) {
-      message += `\n🔄 *Crossover (${crossovers.length}):*\n`;
-      crossovers.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  📍 Entry: ${r.entry} | 🛑 Stop: ${r.sl}\n`;
-        message += `   Targets: ${r.tp1} / ${r.tp2}\n\n`;
-      });
-    }
-    
-    if (momentum.length > 0) {
-      message += `\n⚡ *Momentum (${momentum.length}):*\n`;
-      momentum.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  📍 Entry: ${r.entry} |  Stop: ${r.sl}\n`;
-        message += `  🎯 Targets: ${r.tp1} / ${r.tp2}\n\n`;
-      });
-    }
-    
-    if (smc.length > 0) {
-      message += `\n💎 *Smart Money (${smc.length}):*\n`;
-      smc.forEach(r => {
-        message += `• *${r.symbol}* @ ${r.price} | RSI: ${r.rsi}\n`;
-        message += `  📍 Entry: ${r.entry} | 🛑 Stop: ${r.sl}\n`;
-        message += `  🎯 Targets: ${r.tp1} / ${r.tp2}\n\n`;
-      });
-    }
+    });
     
     bot.sendMessage(chatId, message, { parse_mode: 'Markdown', disable_web_page_preview: true });
   } else {
-    bot.sendMessage(chatId, ` ${scanType}: No signals currently.\n\n*Market is in waiting mode.*`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `⚪ ${scanType}: No signals currently.\n\n*Market is in waiting mode.*`, { parse_mode: 'Markdown' });
   }
 }
 
@@ -304,7 +325,7 @@ bot.onText(/\/start/, (msg) => {
 });
 
 bot.onText(/\/list/, (msg) => {
-  bot.sendMessage(msg.chat.id, `📋 *All Stocks (${UNIQUE_STOCKS.length}):*\n\n${UNIQUE_STOCKS.join(', ')}`, { 
+  bot.sendMessage(msg.chat.id, ` *All Stocks (${UNIQUE_STOCKS.length}):*\n\n${UNIQUE_STOCKS.join(', ')}`, { 
     parse_mode: 'Markdown',
     disable_web_page_preview: true
   });
@@ -314,7 +335,7 @@ bot.onText(/\/price (.+)/, async (msg, match) => {
   const symbol = match[1].toUpperCase();
   const chatId = msg.chat.id;
   
-  await bot.sendMessage(chatId, `⏳ Analyzing ${symbol}...`);
+  await bot.sendMessage(chatId, ` Analyzing ${symbol}...`);
   
   const data = await fetchStockData(symbol);
   if (!data) {
@@ -323,7 +344,7 @@ bot.onText(/\/price (.+)/, async (msg, match) => {
   
   const result = analyzeStock(data);
   if (result) {
-    const text = `📊 *${result.symbol}*\n💰 Price: ${result.price}\n${result.signal}\n📍 Entry: ${result.entry}\n🛑 Stop: ${result.sl}\n🎯 Target 1: ${result.tp1}\n🎯 Target 2: ${result.tp2}\n📈 RSI: ${result.rsi}\n📡 System: ${result.system}`;
+    const text = `📊 *${result.symbol}*\n💰 Price: ${result.price}\n➡️ Trend: ${result.trend}\n🛡️ Support: ${result.support}\n🚀 Resistance: ${result.resistance}\n\n${result.signal}\n Entry: ${result.entry}\n🛑 Stop: ${result.sl}\n🎯 Target 1: ${result.tp1}\n🎯 Target 2: ${result.tp2}\n📈 RSI: ${result.rsi}\n💪 Strength: ${result.strength}/7\n📡 System: ${result.system}`;
     bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
   } else {
     bot.sendMessage(chatId, `📊 *${symbol}*\n💰 Price: ${data.closes[data.closes.length-1].toFixed(2)}\n⚪ No signal currently`, { parse_mode: 'Markdown' });
